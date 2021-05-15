@@ -2,6 +2,8 @@
   "name": "memogram",
   "version": "1.0.0",
   "main": "index.js",
+  "author": "Arnav Gosain <arnav@arnavgosain.com>",
+  "license": "MIT",
   "scripts": {
     "start": "cross-env NODE_ENV=production node ./src/index.js",
     "dev": "cross-env NODE_ENV=development nodemon -w ./src -w ./.env --exec node ./src/index.js"
