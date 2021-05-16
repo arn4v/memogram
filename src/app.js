@@ -1,6 +1,8 @@
 const { Client } = require("@notionhq/client");
 const TelegramBot = require("node-telegram-bot-api");
 
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
 module.exports = async () => {
   const ADMIN_ID = JSON.parse(process.env.ADMIN_ID);
   const DATABASE_ID = process.env.DATABASE_ID;
@@ -9,9 +11,81 @@ module.exports = async () => {
   const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, {
     polling: true,
   });
-  const AUX_COMMANDS = ["/todo", "/done", "/inprogress", "/task", "/note"];
+  const AUX_COMMANDS = ["/todo", "/done", "/inprogress"];
 
-  bot.onText(/\/quick (.+)/, async (msg, match) => {
+  /**
+   * @param {TelegramBot.Message} msg
+   * @param {string} text
+   * @param {boolean} [replyTo = true]
+   */
+  const sendAndDelete = async (msg, text, replyTo = true) => {
+    const sentMessage = await bot.sendMessage(
+      msg.chat.id,
+      text,
+      replyTo
+        ? {
+            reply_to_message_id: msg.message_id,
+          }
+        : {}
+    );
+    await sleep(5000);
+    await bot.deleteMessage(sentMessage.chat.id, sentMessage.message_id);
+  };
+
+  bot.onText(/\/task (.+)/, async (msg, match) => {
+    if (ADMIN_ID.includes(msg.from.id) && typeof match[1] !== "undefined") {
+      if (!msg?.reply_to_message?.message_id) {
+        await notion.request({
+          path: "pages",
+          method: "POST",
+          body: {
+            parent: { database_id: DATABASE_ID },
+            properties: {
+              Text: [{ text: { content: match[1] } }],
+              message_id: msg.message_id,
+              type: { name: "task" },
+              status: { name: "todo" },
+            },
+          },
+        });
+        await sendAndDelete(msg, `Added new task: ${match[1]}.`);
+      } else {
+        await sendAndDelete(
+          msg,
+          "/task only works when you reply to a message sent using /note or /task command."
+        );
+      }
+    } else {
+      bot.sendMessage(msg, "You are not an admin.", false);
+    }
+  });
+
+  bot.onText(/\/task/, async (msg, match) => {
+    if (ADMIN_ID.includes(msg.from.id)) {
+      if (
+        match[0] === "/task" &&
+        typeof match[1] === "undefined" &&
+        typeof msg?.reply_to_message?.message_id !== "undefined" &&
+        ["/task", "/note"].includes(
+          msg?.reply_to_message?.text.match(/(\/task|\/note)/)[0]
+        )
+      ) {
+        await updateType(msg, "task");
+        console.log("Updating type to task");
+      } else {
+        if (typeof msg?.reply_to_message?.message_id !== "undefined") {
+          await sendAndDelete(
+            msg,
+            "/task only works when you reply to a message sent using /note or /task command."
+          );
+        }
+      }
+    } else {
+      await sendAndDelete(msg, "You are not an admin.", false);
+    }
+  });
+
+  bot.onText(/\/note (.+)/, async (msg, match) => {
     if (ADMIN_ID.includes(msg.from.id)) {
       if (!msg?.reply_to_message?.message_id) {
         await notion.request({
@@ -28,60 +102,38 @@ module.exports = async () => {
           },
         });
       } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "Reply to only works with status commands: /todo, /done, /inprogress and type commands: /note, /task.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
+        await sendAndDelete(
+          msg,
+          "/note can be used to convert a task to a note or to add a new note. Usage: /note <note text>"
         );
       }
     } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
+      await sendAndDelete(msg, "You are not an admin.", false);
     }
   });
 
   bot.onText(/\/note/, async (msg, match) => {
     if (ADMIN_ID.includes(msg.from.id)) {
-      if (
-        msg?.reply_to_message?.message_id &&
-        !AUX_COMMANDS.includes(msg?.reply_to_message.text) &&
-        msg?.reply_to_message?.text.includes("/quick")
-      ) {
-        await updateType(msg, "note");
+      if (match[0] === "/note") {
+        if (
+          typeof msg?.reply_to_message?.message_id !== "undefined" &&
+          ["/task", "/note"].includes(
+            msg?.reply_to_message?.text.match(/(\/task|\/note)/)[0]
+          )
+        ) {
+          console.log("Updating type to note.");
+          await updateType(msg, "note");
+        } else {
+          await sendAndDelete(
+            msg,
+            "/note can be used to convert a task to a note or to add a new note. Usage: /note <note text>"
+          );
+        }
       } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "/note only works when you reply to a note made using /quick command.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
-        );
+        await sendAndDelete(msg, "Invalid usage. Usage: /note <task text>");
       }
     } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
-    }
-  });
-
-  bot.onText(/\/task/, async (msg, match) => {
-    if (ADMIN_ID.includes(msg.from.id)) {
-      if (
-        msg?.reply_to_message?.message_id &&
-        !AUX_COMMANDS.includes(msg?.reply_to_message.text) &&
-        msg?.reply_to_message?.text.includes("/quick")
-      ) {
-        await updateType(msg, "task");
-      } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "/task only works when you reply to a note made using /quick command.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
-        );
-      }
-    } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
+      await sendAndDelete(msg, "You are not an admin.", false);
     }
   });
 
@@ -90,20 +142,19 @@ module.exports = async () => {
       if (
         msg?.reply_to_message?.message_id &&
         !AUX_COMMANDS.includes(msg?.reply_to_message.text) &&
-        msg?.reply_to_message?.text.includes("/quick")
+        ["/task", "/note"].includes(
+          msg?.reply_to_message?.text.match(/(\/task|\/note)/)[0]
+        )
       ) {
-        updateStatus(msg, "done");
+        await updateStatus(msg, "done");
       } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "/done only works when you reply to a note made using /quick command.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
+        await sendAndDelete(
+          msg,
+          "/done only works when you reply to a note made using /quick command."
         );
       }
     } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
+      await sendAndDelete(msg, "You are not an admin.", false);
     }
   });
 
@@ -112,20 +163,19 @@ module.exports = async () => {
       if (
         msg?.reply_to_message?.message_id &&
         !AUX_COMMANDS.includes(msg?.reply_to_message.text) &&
-        msg?.reply_to_message?.text.includes("/quick")
+        ["/task", "/note"].includes(
+          msg?.reply_to_message?.text.match(/(\/task|\/note)/)[0]
+        )
       ) {
-        updateStatus(msg, "todo");
+        await updateStatus(msg, "todo");
       } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "/done only works when you reply to a note made using /quick command.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
+        await sendAndDelete(
+          msg,
+          "/done only works when you reply to a note made using /quick command."
         );
       }
     } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
+      await sendAndDelete(msg, "You are not an admin.", false);
     }
   });
 
@@ -134,20 +184,19 @@ module.exports = async () => {
       if (
         msg?.reply_to_message?.message_id &&
         !AUX_COMMANDS.includes(msg?.reply_to_message.text) &&
-        msg?.reply_to_message?.text.includes("/quick")
+        ["/task", "/note"].includes(
+          msg?.reply_to_message?.text.match(/(\/task|\/note)/)[0]
+        )
       ) {
-        updateStatus(msg, "inprogress");
+        await updateStatus(msg, "inprogress");
       } else {
-        bot.sendMessage(
-          msg.chat.id,
-          "/done only works when you reply to a note made using /quick command.",
-          {
-            reply_to_message_id: msg.message_id,
-          }
+        await sendAndDelete(
+          msg,
+          "/done only works when you reply to a note made using /quick command."
         );
       }
     } else {
-      bot.sendMessage(msg.chat.id, "You are not an admin.");
+      await sendAndDelete(msg, "You are not an admin.", false);
     }
   });
 
@@ -164,13 +213,7 @@ module.exports = async () => {
       );
     })[0];
     if (!note) {
-      bot.sendMessage(
-        msg.chat.id,
-        'The message replied to is not of type "note".',
-        {
-          reply_to_message_id: msg.message_id,
-        }
-      );
+      await sendAndDelete(msg, 'The message replied to is not of type "note".');
       return;
     } else {
       await notion.pages.update({
@@ -179,9 +222,8 @@ module.exports = async () => {
           status: { select: { name: status } },
         },
       });
-      bot.sendMessage(msg.chat.id, `Marked task as "${status}".`, {
-        reply_to_message_id: msg.message_id,
-      });
+      await sendAndDelete(msg, `Marked task as "${status}".`);
+      await bot.deleteMessage(msg.chat.id, msg.message_id);
     }
   };
 
@@ -199,12 +241,9 @@ module.exports = async () => {
     })[0];
 
     if (!note) {
-      bot.sendMessage(
-        msg.chat.id,
-        `The message replied to is already of type ${type}`,
-        {
-          reply_to_message_id: msg.message_id,
-        }
+      await sendAndDelete(
+        msg,
+        `The message replied to is already of type ${type}`
       );
       return;
     } else {
@@ -222,16 +261,12 @@ module.exports = async () => {
                 }),
           },
         });
-        bot.sendMessage(msg.chat.id, `Marked message as type of "${type}".`, {
-          reply_to_message_id: msg.message_id,
-        });
+        await sendAndDelete(msg, `Marked message as type of "${type}".`);
+        await bot.deleteMessage(msg.chat.id, msg.message_id);
       } catch (err) {
-        bot.sendMessage(
-          msg.chat.id,
-          `Unable to change type. Error: "${err.toString()}".`,
-          {
-            reply_to_message_id: msg.message_id,
-          }
+        await sendAndDelete(
+          msg,
+          `Unable to change type. Error: "${err.toString()}".`
         );
       }
     }
